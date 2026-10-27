@@ -1,0 +1,80 @@
+name: test
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS matters here: st_blocks and APFS behave differently from ext4,
+        # and these runners use an ordinary user with a low descriptor limit,
+        # which is how the fd-exhaustion bug was found. The tests ask du for
+        # BLOCKSIZE=512 blocks because BSD du rejects GNU's --block-size=1.
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.8", "3.10", "3.12"]
+        exclude:
+          - os: macos-latest
+            python: "3.8"      # unavailable on the arm64 macOS runners
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Syntax check
+        run: make lint
+      - name: Show descriptor limit
+        run: ulimit -n
+      - name: Tests
+        run: python3 -m unittest -v test_grew test_hardening
+
+  test-as-root:
+    name: ubuntu / root
+    runs-on: ubuntu-latest
+    container: python:3.12-slim
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install coreutils and make
+        run: apt-get update && apt-get install -y coreutils make
+      - name: Tests as root
+        # Root skips the permission test but has a high descriptor limit, so
+        # the two jobs between them cover the whole suite.
+        run: python3 -m unittest test_grew test_hardening
+
+  install:
+    name: install target
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make install DESTDIR=/tmp/staged PREFIX=/usr
+      - name: Smoke test the installed binary
+        run: |
+          /tmp/staged/usr/bin/grew --version
+          /tmp/staged/usr/bin/grew snap /usr/share --min-size 1M -q
+          /tmp/staged/usr/bin/grew top -n 5
+          /tmp/staged/usr/bin/grew list --json
+          /tmp/staged/usr/bin/grew prune --keep 5 -q
+          test -f /tmp/staged/usr/share/man/man1/grew.1
+
+  package:
+    name: pip package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build the sdist and wheel
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+      - name: Install the wheel into a clean venv and smoke test it
+        run: |
+          python -m venv /tmp/venv
+          /tmp/venv/bin/pip install dist/*.whl
+          /tmp/venv/bin/grew --version
+          /tmp/venv/bin/python -m grew --version
+          /tmp/venv/bin/grew --db /tmp/pkg.db snap /usr/share --min-size 1M -q
+          /tmp/venv/bin/grew --db /tmp/pkg.db top -n 5

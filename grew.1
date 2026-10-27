@@ -1,0 +1,214 @@
+.TH GREW 1 "2026" "grew 1.1.0" "User Commands"
+.SH NAME
+grew \- track what is eating your disk, over time
+.SH SYNOPSIS
+.B grew
+.I command
+.RI [ options ]
+.RI [ path ]
+.SH DESCRIPTION
+.B du
+and
+.B ncdu
+show which directories are large right now. Neither shows which directories
+.I grew.
+.PP
+.B grew
+records directory sizes periodically and diffs those snapshots, so you can ask
+what consumed 40GB since last week and get the specific directory responsible.
+.PP
+Because directory sizes are cumulative, a single large subdirectory inflates every
+parent above it.
+.B grew
+suppresses any directory whose change is explained by one child, reporting only the
+directory actually to blame. Use
+.B \-\-all
+to see the full chain.
+.SH COMMANDS
+.TP
+.B snap " [" \fIpath\fR "]"
+Record directory sizes beneath \fIpath\fR (default: current directory). A directory
+inside the tree that cannot be listed is counted as unreadable and the snapshot is
+still taken. A \fIpath\fR containing \fB..\fR is resolved the way the kernel reads it,
+so \fBlnk/..\fR (with \fBlnk\fR a symlink) is the real parent, as for \fBdu\fR.
+.TP
+.B growth " [" \fIpath\fR "]"
+Show what changed between two snapshots. Defaults to the two most recent.
+.TP
+.B top " [" \fIpath\fR "]"
+List the largest directories in the most recent snapshot.
+.TP
+.B list " [" \fIpath\fR "]"
+List recorded snapshots with their totals and change since the previous one.
+.TP
+.B prune " [" \fIpath\fR "]"
+Delete old snapshots, keeping the newest \fB\-\-keep\fR (default 20) of
+.I each
+directory, so a busy directory cannot push a quieter one's history out. With a
+\fIpath\fR, only that directory's snapshots are touched.
+.PP
+\fBlist\fR, \fBtop\fR, \fBgrowth\fR and \fBprune\fR given a \fIpath\fR with no
+snapshots name that path and say how many other directories do have snapshots.
+.SH OPTIONS
+.TP
+.BI \-\-db " FILE"
+Database location. Defaults to \fI$XDG_DATA_HOME/grew/snapshots.db\fR. The name
+\fB:memory:\fR is refused, because sqlite would keep the snapshot in memory and
+lose it when \fBgrew\fR exits; write \fB./:memory:\fR for a file of that name.
+.TP
+.B \-\-json
+Machine-readable output. Supported by every command, including \fBprune\fR.
+Names are JSON-escaped; in the plain output, control characters in a directory name
+(escape, newline, bell and the like) are written as \fB\\x1b\fR, \fB\\x0a\fR and so on, so
+that a name cannot drive the terminal.
+.TP
+.B \-\-no\-color
+Disable colour. Colour is also disabled when output is not a terminal or when
+.B NO_COLOR
+is set.
+.PP
+\fB\-\-db\fR, \fB\-\-json\fR and \fB\-\-no\-color\fR are accepted either before or after the
+command: \fBgrew \-\-json list\fR and \fBgrew list \-\-json\fR are the same.
+.SS snap options
+.TP
+.BI \-\-min\-size " SIZE"
+Ignore directories smaller than \fISIZE\fR (default 1M). Keeps snapshots small.
+.TP
+.BI \-\-depth " N"
+Only record directories at most \fIN\fR levels deep.
+.TP
+.B \-\-apparent
+Use apparent file size rather than allocated blocks. As with
+\fBdu \-\-apparent\-size\fR, files and symlinks are counted and directories are not.
+.TP
+.B \-\-cross\-filesystem
+Descend into other mounted filesystems. Off by default.
+.TP
+.BI \-\-exclude " PATH"
+Skip \fIPATH\fR. May be given more than once. A relative \fIPATH\fR is taken from the
+current directory, as for any other argument, not from the snapshot root. One that is not
+inside the snapshot, or does not exist, excludes nothing and is reported on standard
+error (also with \fB\-q\fR, so that a cron job with a wrong path is noticed); the
+snapshot is still taken.
+.TP
+.B \-q ", " \-\-quiet
+Suppress progress output.
+.SS growth options
+.TP
+.BI \-\-since " DURATION"
+Compare against the newest snapshot at least \fIDURATION\fR old, e.g. \fB7d\fR,
+\fB12h\fR, \fB2w\fR. A number and a unit (\fBs m h d w\fR) are required, and the
+duration must be greater than zero. If the history does not go back that far, the
+oldest snapshot is used and a note is printed on standard error (never on standard
+output, so \fB\-\-json\fR stays clean).
+.TP
+.BI \-\-from " ID" ", " \-\-to " ID"
+Compare two specific snapshots by id, as shown by \fBgrew list\fR. The two must be
+different snapshots of the same directory.
+.TP
+.BI \-n " N" ", " \-\-top " N"
+Limit output to \fIN\fR entries (default 20).
+.TP
+.B \-\-all
+Show parent directories instead of only the responsible one.
+.TP
+.B \-\-shrink
+Include directories that got smaller. Without it, a tree that only shrank reports that
+nothing grew and how many directories shrank, rather than that nothing changed.
+Changes of equal size are listed in path order, so the output (and what \fB\-n\fR cuts)
+is the same on every run.
+.SS prune options
+.TP
+.BI \-\-keep " N"
+Keep the newest \fIN\fR snapshots of each directory (default 20). \fB\-\-keep 0\fR
+removes every snapshot.
+.TP
+.B \-q ", " \-\-quiet
+Print nothing on success, for cron. \fB\-\-json\fR still prints its result.
+.SH EXAMPLES
+.TP
+Take a snapshot now:
+.B grew snap /home/me
+.TP
+See what changed in the last week:
+.B grew growth --since 7d
+.TP
+Snapshot daily from cron, keeping two months:
+.nf
+.B 0 3 * * * grew snap /home -q && grew prune --keep 60 -q
+.fi
+.SH FILES
+.TP
+.I $XDG_DATA_HOME/grew/snapshots.db
+Snapshot database. Falls back to \fI~/.local/share/grew\fR. It lists the large
+directories of the disk, so \fBgrew\fR creates the file with mode 0600 and a directory
+it has to create with 0700 (both less the umask); existing ones are left as they are.
+Only \fBsnap\fR creates
+it; the other commands report that nothing is recorded yet and leave no file behind.
+\fBlist\fR, \fBtop\fR and \fBgrowth\fR also work on a read-only database, and
+create nothing, not even \fI\-wal\fR or \fI\-shm\fR files. \fBsnap\fR and
+\fBprune\fR on a database file that is read-only are refused before it is opened,
+so a failed write leaves nothing behind either; the message names the file to make
+writable. An empty file counts as a
+database with nothing in it. A SQLite file that grew did not create is refused and
+never written to; having a table called \fBmeta\fR is not enough to count as grew's, the
+table must have grew's columns and a \fBschema\fR row and nothing foreign may sit beside it.
+A \fBlist\fR, \fBtop\fR or \fBgrowth\fR on a database that does not exist, or is an empty
+file, names that file in its message, so a mistyped \fB\-\-db\fR is easy to spot. Paths are
+stored as bytes (BLOB columns); databases from grew 1.0 stored them as TEXT and are
+still read correctly. The schema version is unchanged (1).
+.SH EXIT STATUS
+.TP
+.B 0
+Success. A directory inside the scanned tree that cannot be read does not change
+this: it is counted (\fBsnap\fR prints how many were unreadable) and the scan goes
+on. This includes \fBlist\fR and \fBprune\fR finding nothing for a path: an
+empty answer is still an answer, and a nightly \fBprune\fR should not fail on it. It
+also includes \fBsnap\fR when the snapshot was saved but its summary could not be
+written (a full or closed standard output): a note on standard error says so.
+.TP
+.B 1
+Error, with a message saying what to do. This includes \fBtop\fR and \fBgrowth\fR
+having no snapshots to work from (fewer than two for \fBgrowth\fR), a database that
+cannot be used (including \fBsnap\fR or \fBprune\fR on a read-only file), and a
+\fBsnap\fR path that does not exist, is not a directory, or lies below a directory
+that cannot be searched.
+.TP
+.B 2
+Bad usage, such as an unknown option or \fB\-\-since 0s\fR.
+.TP
+.B 130
+Interrupted (Ctrl-C), also when pressed twice. Nothing is left half-written.
+.SH DIAGNOSTICS
+When the database cannot be used, the message says why and what to do. A locked
+database means another \fBgrew\fR is writing: try again. A read-only file or
+directory means fixing the permissions or using \fB\-\-db\fR; a filesystem mounted
+read-only is named as such, because changing permissions does not help there. A full disk means
+freeing space. Only a file that looks corrupt is told to be moved aside; \fBgrew\fR
+never advises deleting a database that may be healthy. A SQLite file belonging to
+another program, a path that is not a regular file (such as \fI/dev/null\fR), and a
+database holding the wrong kind of data are each reported as what they are. On a
+terminal that cannot show the arrow and ellipsis characters, \fB\->\fR and
+\fB...\fR are used instead.
+.SH NOTES
+Sizes count allocated blocks, matching
+.BR du (1),
+or with \fB\-\-apparent\fR file and symlink sizes, matching \fBdu \-\-apparent\-size\fR.
+Hardlinked files, and hardlinked symlinks, are counted once. Symlinks are never
+followed.
+.PP
+The totals agree with \fBdu \-x\fR with one exception, by design: \fBsnap\fR does not
+descend into \fI/proc\fR, \fI/sys\fR, \fI/dev\fR, \fI/run\fR or \fI/tmp/.X11\-unix\fR
+below its root, even where one of them is on the same filesystem (as in many containers),
+because they report meaningless sizes or never end. Snapping one of them directly, as the
+root, does scan it.
+.PP
+Snapshots taken with \fB\-\-apparent\fR by grew 1.0 counted each directory's own
+size, which \fBdu \-\-apparent\-size\fR does not. Nothing in the database tells them
+from newer ones, so \fBgrowth\fR across the upgrade shows a drop equal to the sum of
+the directory sizes. Take a fresh \fB\-\-apparent\fR snapshot and compare from there,
+or \fBprune \-\-keep 0\fR the old ones.
+.SH SEE ALSO
+.BR du (1),
+.BR df (1),
+.BR ncdu (1)

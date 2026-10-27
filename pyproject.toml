@@ -1,0 +1,44 @@
+[build-system]
+# 61 is the oldest setuptools that reads [project] from this file, and the newest
+# releases need Python 3.9+, so a higher floor would stop pip building on 3.8.
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+# "grew" is already taken on PyPI, so the distribution is grew-disk.
+# The command and the module are still called grew.
+name = "grew-disk"
+dynamic = ["version"]
+description = "Find out what is eating your disk, over time."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.8"
+authors = [{ name = "Mashfikuzzaman Taeen" }]
+keywords = ["disk", "du", "disk usage", "storage", "cli", "sqlite"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: System Administrators",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: System :: Filesystems",
+    "Topic :: Utilities",
+]
+
+[project.urls]
+Homepage = "https://github.com/mashfikuzzaman-2023415968-cell/grew"
+Issues = "https://github.com/mashfikuzzaman-2023415968-cell/grew/issues"
+
+[project.scripts]
+# entry() is what the single file runs too, so both installs behave the same.
+grew = "grew:entry"
+
+[tool.setuptools]
+py-modules = ["grew"]
+
+[tool.setuptools.dynamic]
+version = { attr = "grew.__version__" }
