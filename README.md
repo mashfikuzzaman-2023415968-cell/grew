@@ -203,7 +203,9 @@ fills a disk, and its totals match `du -sx` exactly. The tests check this agains
 real directories.
 
 - Hardlinked files are counted once.
-- Symlinks aren't followed, but the link itself is counted, as `du` does.
+- Symlinks aren't followed, but the link itself is counted, as `du` does. The one
+  exception is the directory you snapshot: if that is a symlink, grew reads what it
+  points to, like `du -H`.
 - It stays on one filesystem, like `du -x`. With `--cross-filesystem` it follows other
   mounts and matches plain `du`.
 - It skips `/proc`, `/sys`, `/dev`, `/run` and `/tmp/.X11-unix` if it meets them inside the
@@ -251,6 +253,8 @@ you interrupt a snapshot, nothing partial is saved.
 - Each snapshot walks the whole directory tree, so on a very large disk it takes as long as
   `du` would.
 - It works per directory. It tells you which directory grew, not which file.
+- It can't read a directory whose full path is longer than the system allows (1024
+  bytes on macOS, 4096 on Linux). It counts those as unreadable and tells you how many.
 - Linux and macOS only. Windows doesn't have the block counts grew relies on.
 - It hasn't been tried on network filesystems, where sizes can be slow to read or not quite
   right.

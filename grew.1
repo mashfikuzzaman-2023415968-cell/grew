@@ -195,7 +195,8 @@ Sizes count allocated blocks, matching
 .BR du (1),
 or with \fB\-\-apparent\fR file and symlink sizes, matching \fBdu \-\-apparent\-size\fR.
 Hardlinked files, and hardlinked symlinks, are counted once. Symlinks are never
-followed.
+followed, except a root that is itself a symlink, which is read through as
+\fBdu \-H\fR would.
 .PP
 The totals agree with \fBdu \-x\fR with one exception, by design: \fBsnap\fR does not
 descend into \fI/proc\fR, \fI/sys\fR, \fI/dev\fR, \fI/run\fR or \fI/tmp/.X11\-unix\fR
@@ -208,6 +209,9 @@ size, which \fBdu \-\-apparent\-size\fR does not. Nothing in the database tells 
 from newer ones, so \fBgrowth\fR across the upgrade shows a drop equal to the sum of
 the directory sizes. Take a fresh \fB\-\-apparent\fR snapshot and compare from there,
 or \fBprune \-\-keep 0\fR the old ones.
+.PP
+A directory whose full path is longer than the system allows (1024 bytes on macOS,
+4096 on Linux) cannot be read, and is counted as unreadable.
 .SH SEE ALSO
 .BR du (1),
 .BR df (1),

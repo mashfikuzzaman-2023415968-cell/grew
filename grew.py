@@ -609,7 +609,7 @@ def scan(root: str, *, apparent: bool = False, one_fs: bool = True,
     result so stored snapshots stay small.
     """
     root = abs_root(root)
-    exclude = [os.path.abspath(p) for p in (exclude or [])]
+    exclude = [same_spelling(os.path.abspath(p), root) for p in (exclude or [])]
     root_dev = os.stat(root).st_dev
     seen_inodes: set[tuple[int, int]] = set()
 
@@ -622,7 +622,7 @@ def scan(root: str, *, apparent: bool = False, one_fs: bool = True,
             return True
         return any(path == e or path.startswith(e + os.sep) for e in exclude)
 
-    def own_size(path: str) -> int:
+    def own_size(path: str, follow: bool = False) -> int:
         # A directory's own inode occupies space too; du counts it, so do we.
         # Apparent mode is different: du --apparent-size (and -b) leave
         # directories out, and a directory's st_size is a filesystem artefact
@@ -630,11 +630,11 @@ def scan(root: str, *, apparent: bool = False, one_fs: bool = True,
         if apparent:
             return 0
         try:
-            return os.stat(path, follow_symlinks=False).st_blocks * 512
+            return os.stat(path, follow_symlinks=follow).st_blocks * 512
         except OSError:
             return 0
 
-    def open_frame(path: str) -> list:
+    def open_frame(path: str, follow: bool = False) -> list:
         """Read a directory fully, then close it.
 
         Holding the handle open while descending would keep one file
@@ -650,12 +650,14 @@ def scan(root: str, *, apparent: bool = False, one_fs: bool = True,
         except OSError:
             errors += 1
             entries = []
-        return [path, entries, 0, own_size(path), 0]
+        return [path, entries, 0, own_size(path, follow), 0]
 
     # Explicit stack rather than recursion: real filesystems nest deeper than
     # Python's recursion limit, and a RecursionError mid-scan loses everything.
     PATH, ENTRIES, POS, SIZE, FILES = 0, 1, 2, 3, 4
-    stack = [open_frame(root)]
+    # A root that is a symlink is read through (abs_root keeps its name), so its
+    # own size is the directory's, not the link's.
+    stack = [open_frame(root, follow=True)]
     total = files = 0
 
     while stack:
@@ -818,6 +820,29 @@ def note(text: str) -> None:
 MAX_ROWS = (1 << 62)
 
 
+def within(path: str, root: str) -> bool:
+    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
+
+
+def same_spelling(path: str, root: str) -> str:
+    """`path` written from `root`, when the two reach the same place differently.
+
+    On macOS /var is a symlink to /private/var, and the current directory comes
+    back as /private/var/..., so a relative --exclude never matched a root typed
+    as /var/.... Paths are compared as text, so move it onto the root's spelling.
+    Only the parent is resolved: the last part may itself be a symlink.
+    """
+    if within(path, root):
+        return path
+    real_root = os.path.realpath(root)
+    real = os.path.join(os.path.realpath(os.path.dirname(path)), os.path.basename(path))
+    if real == real_root:
+        return root
+    if within(real, real_root):
+        return os.path.join(root, os.path.relpath(real, real_root))
+    return path
+
+
 def abs_root(path: str) -> str:
     """The absolute directory a path names, the way the kernel reads it.
 
@@ -966,8 +991,8 @@ def cmd_snap(args, db, pal) -> int:
     # user meant to leave out, so say so. Also under -q: a cron job with a wrong
     # path should be heard.
     for given in args.exclude:
-        path = os.path.abspath(given)
-        if path != root and not path.startswith(root.rstrip(os.sep) + os.sep):
+        path = same_spelling(os.path.abspath(given), root)
+        if not within(path, root):
             note(f"grew: note: --exclude {safe(given)} is not inside {shown}, so it excludes "
                  f"nothing\n      (relative paths are taken from the current directory, "
                  f"here {safe(os.getcwd())})")

@@ -215,15 +215,37 @@ class TestDeepTrees(Base):
         write(os.path.join(cur, "leaf.bin"), 4096)
         return cur
 
+    def fits(self, depth):
+        """Whether a tree this deep stays under the system's path limit.
+
+        macOS allows 1024 bytes and Linux 4096. Deeper than that the tree cannot
+        be built from full paths, and grew cannot read it either (it counts such
+        a directory as unreadable).
+        """
+        longest = len(self.tree) + 2 * depth + len("/leaf.bin")
+        return longest < os.pathconf(self.tree, "PC_PATH_MAX")
+
     def test_deeper_than_python_recursion_limit(self):
-        """A 1,200-level tree used to blow the stack and lose the whole scan."""
-        limit = sys.getrecursionlimit()
-        self._build(limit + 200)
-        res = g.scan(self.tree, apparent=True, min_size=0)
-        self.assertGreaterEqual(res.files, 1)
+        """A 1,200-level tree used to blow the stack and lose the whole scan.
+
+        1,200 levels do not fit in a macOS path, so the recursion limit comes
+        down instead: a recursive walk overflows 400 levels at a limit of 200.
+        """
+        self._build(400)
+        previous = sys.getrecursionlimit()
+        sys.setrecursionlimit(200)
+        try:
+            res = g.scan(self.tree, apparent=True, min_size=0)
+        finally:
+            sys.setrecursionlimit(previous)
+        self.assertEqual(res.files, 1)
         self.assertGreater(res.total, 0)
 
     def test_deep_tree_via_cli(self):
+        # The whole command at its normal recursion limit, so this needs the
+        # depth itself.
+        if not self.fits(1200):
+            self.skipTest("a 1,200-level path is longer than this system allows")
         self._build(1200)
         proc = self.cli("snap", self.tree, "-q", "--min-size", "1", proc=True)
         self.assertNotIn("Traceback", proc.stderr)
@@ -234,7 +256,8 @@ class TestDeepTrees(Base):
         Root usually has a high RLIMIT_NOFILE, so this only showed up when the
         suite was run as an ordinary user with the default limit of 1024.
         """
-        depth = 600
+        depth = 300                  # over twice the limit, and it fits a macOS path
+        self.assertTrue(self.fits(depth))
         self._build(depth)
         script = (
             "import resource, sys, importlib.util, importlib.machinery\n"
@@ -602,6 +625,10 @@ class TestRealFilesystems(unittest.TestCase):
                       "/usr/share/doc", "/usr/share/terminfo", "/etc", "/opt", "/usr/local"]
         seen = []
         for path in candidates:
+            # Resolved: on macOS /usr/share/zoneinfo and /etc are symlinks. grew
+            # reads through a symlinked root and du does not, so they would
+            # measure different things.
+            path = os.path.realpath(path)
             if os.path.isdir(path) and os.access(path, os.R_OK | os.X_OK) \
                     and path not in seen:
                 seen.append(path)
@@ -969,7 +996,12 @@ class TestUndecodableFilenames(Base):
 
     def _make(self):
         raw = os.path.join(os.fsencode(self.tree), b"bad\xff\xfename")
-        os.makedirs(raw, exist_ok=True)
+        try:
+            os.makedirs(raw, exist_ok=True)
+        except OSError as exc:
+            if exc.errno != errno.EILSEQ:
+                raise
+            self.skipTest("this filesystem only takes UTF-8 names (APFS)")
         with open(os.path.join(raw, b"f.bin"), "wb") as f:
             f.write(b"\0" * 2 * 1048576)
         return os.fsdecode(raw)
@@ -2228,18 +2260,18 @@ class TestDuHelpers(Base):
     """The du oracle must run on BSD du too, or the macOS job crashes (D2)."""
 
     # Behaves like BSD du: no long options, sizes in BLOCKSIZE units only, and
-    # no GNU variables that would change the answer.
+    # no GNU variables that would change the answer. It is Python, not sh:
+    # macOS's /bin/sh is bash in POSIX mode, which sets POSIXLY_CORRECT itself.
     FAKE_DU = (
-        "#!/bin/sh\n"
-        'for a in "$@"; do case "$a" in\n'
-        '  -s|-x) ;;\n'
-        '  -*) echo "du: illegal option -- $a" >&2; exit 64;;\n'
-        "esac; done\n"
-        '[ "$BLOCKSIZE" = 512 ] || { echo "du: BLOCKSIZE is not 512" >&2; exit 65; }\n'
-        '[ -z "$BLOCK_SIZE$DU_BLOCK_SIZE$POSIXLY_CORRECT" ] || '
-        '{ echo "du: GNU variable set" >&2; exit 66; }\n'
-        'for a in "$@"; do last=$a; done\n'
-        'printf "7\\t%s\\n" "$last"\n'
+        "import os, sys\n"
+        "for a in sys.argv[1:]:\n"
+        "    if a.startswith('-') and a not in ('-s', '-x'):\n"
+        "        sys.stderr.write('du: illegal option -- %s\\n' % a); sys.exit(64)\n"
+        "if os.environ.get('BLOCKSIZE') != '512':\n"
+        "    sys.stderr.write('du: BLOCKSIZE is not 512\\n'); sys.exit(65)\n"
+        "if any(os.environ.get(k) for k in ('BLOCK_SIZE', 'DU_BLOCK_SIZE', 'POSIXLY_CORRECT')):\n"
+        "    sys.stderr.write('du: GNU variable set\\n'); sys.exit(66)\n"
+        "print('7\\t' + sys.argv[-1])\n"
     )
 
     def fake_du_path(self):
@@ -2247,7 +2279,7 @@ class TestDuHelpers(Base):
         os.makedirs(folder)
         exe = os.path.join(folder, "du")
         with open(exe, "w") as f:
-            f.write(self.FAKE_DU)
+            f.write("#!" + sys.executable + " -I\n" + self.FAKE_DU)
         os.chmod(exe, 0o755)
         return folder
 
@@ -4227,6 +4259,14 @@ class TestRootThroughSymlinkAndDotDot(Base):
         out = json.loads(self.cli("--json", "snap", link, "-q", "--min-size", "1").stdout)
         self.assertEqual(out["root"], link)             # not resolved: it is the name given
 
+    def test_a_symlinked_root_bills_the_directory_not_the_link(self):
+        write(os.path.join(self.tree, "a", "f.bin"), 20000)
+        for i in range(200):         # a directory big enough to need several blocks
+            write(os.path.join(self.tree, "entry-with-a-long-name-%03d" % i))
+        link = os.path.join(self.root, "alias")
+        os.symlink("tree", link)     # short, so on ext4 the link itself takes no block
+        self.assertEqual(g.scan(link, min_size=0).total, g.scan(self.tree, min_size=0).total)
+
 
 class TestExcludeWarnings(Base):
     """An --exclude that excludes nothing is said so, even under -q (cron)."""
@@ -4259,6 +4299,26 @@ class TestExcludeWarnings(Base):
         total, err = self.total("--exclude", "tree/cache")      # relative to the cwd: works
         self.assertEqual(err, "")
         self.assertLess(total, apparent_bytes(self.tree))
+
+    def test_an_exclude_spelled_through_another_route_still_excludes(self):
+        """macOS: /var is /private/var, and getcwd() gives the /private form.
+
+        A relative --exclude came out as /private/var/... against a root typed
+        as /var/..., matched nothing as text, and was reported as outside.
+        """
+        link = os.path.join(self.root, "alias")
+        os.symlink(self.tree, link)
+        previous = os.getcwd()
+        os.chdir(self.tree)                       # the real spelling, like getcwd()
+        self.addCleanup(os.chdir, previous)
+        proc = self.cli("--json", "snap", link, "-q", "--apparent", "--min-size", "1",
+                        "--exclude", "cache")
+        self.assertEqual(proc.stderr, "")
+        self.assertEqual(json.loads(proc.stdout)["total"], apparent_bytes(self.tree)
+                         - apparent_bytes(os.path.join(self.tree, "cache")))
+        res = g.scan(link, apparent=True, min_size=0,
+                     exclude=[os.path.join(self.tree, "cache")])
+        self.assertNotIn(os.path.join(link, "cache"), res.sizes)
 
     def test_a_path_inside_the_root_that_does_not_exist_is_reported(self):
         _, err = self.total("--exclude", os.path.join(self.tree, "caches"))
