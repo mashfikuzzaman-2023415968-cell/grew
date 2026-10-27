@@ -692,6 +692,10 @@ def scan(root: str, *, apparent: bool = False, one_fs: bool = True,
                     break
                 if entry.is_file(follow_symlinks=False):
                     st = entry.stat(follow_symlinks=False)
+                    if one_fs and st.st_dev != root_dev:
+                        # A file can be a mount point too (Docker bind-mounts
+                        # /etc/hosts), and du -x leaves it out like a directory.
+                        continue
                     if st.st_nlink > 1:
                         key = (st.st_dev, st.st_ino)
                         if key in seen_inodes:

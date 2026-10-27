@@ -3398,7 +3398,10 @@ class TestSnapPaths(Base):
         made_read_only(self, folder)
         os.chmod(folder, 0)
         out = json.loads(self.cli("--json", "snap", folder).stdout)
-        self.assertEqual((out["errors"], out["total"]), (1, 0))
+        # Only the directory's own inode is left to count: nothing on tmpfs,
+        # a block on ext4 and APFS.
+        own = os.lstat(folder).st_blocks * 512
+        self.assertEqual((out["errors"], out["total"]), (1, own))
 
     def test_a_missing_path_and_a_file_are_both_not_a_directory(self):
         write(os.path.join(self.tree, "f.bin"), 10)
@@ -4056,6 +4059,56 @@ class TestTiedGrowthIsStable(Base):
         self.assertEqual([c["path"] for c in top], expected)
 
 
+class TestMountedFiles(Base):
+    """A file can be a mount point (Docker bind-mounts /etc/hosts), and du -x
+    leaves it out. grew counted it, so the root CI job disagreed with du on /etc.
+    """
+
+    def scan_with_one_file_elsewhere(self, one_fs):
+        write(os.path.join(self.tree, "local.bin"), 3000)
+        write(os.path.join(self.tree, "sub", "mounted.bin"), 50000)
+        real_scandir = os.scandir
+
+        class Entry:
+            def __init__(self, entry):
+                self._entry = entry
+                self.name, self.path = entry.name, entry.path
+
+            def is_symlink(self):
+                return self._entry.is_symlink()
+
+            def is_dir(self, follow_symlinks=True):
+                return self._entry.is_dir(follow_symlinks=follow_symlinks)
+
+            def is_file(self, follow_symlinks=True):
+                return self._entry.is_file(follow_symlinks=follow_symlinks)
+
+            def stat(self, follow_symlinks=True):
+                st = self._entry.stat(follow_symlinks=follow_symlinks)
+                if self.name != "mounted.bin":
+                    return st
+                return types.SimpleNamespace(
+                    st_dev=st.st_dev + 1, st_ino=st.st_ino, st_nlink=st.st_nlink,
+                    st_size=st.st_size, st_blocks=st.st_blocks)
+
+        @contextlib.contextmanager
+        def scandir(path):
+            with real_scandir(path) as it:
+                yield (Entry(e) for e in it)
+
+        with mock.patch.object(g.os, "scandir", scandir):
+            return g.scan(self.tree, apparent=True, min_size=0, one_fs=one_fs)
+
+    def test_a_file_on_another_filesystem_is_left_out(self):
+        res = self.scan_with_one_file_elsewhere(one_fs=True)
+        self.assertEqual(res.total, 3000)
+        self.assertEqual(res.errors, 0)
+
+    def test_cross_filesystem_still_counts_it(self):
+        res = self.scan_with_one_file_elsewhere(one_fs=False)
+        self.assertEqual(res.total, 53000)
+
+
 class TestGrowthShrinkOnly(Base):
     """A tree that only shrank is not "unchanged" (the header shows the drop)."""
 
@@ -4074,7 +4127,9 @@ class TestGrowthShrinkOnly(Base):
         self.assertIn("shrank", proc.stdout)
         self.assertIn("--shrink", proc.stdout)
         shown = self.cli("growth", "--min-size", "1", "--shrink").stdout
-        self.assertIn(os.path.join(self.tree, "big"), shown)
+        # A long temporary directory (macOS) gets its start cut off, so look
+        # for the end of the path.
+        self.assertRegex(shown, r"-5\.0M\s+\S*" + re.escape(os.path.join("tree", "big")) + " ")
 
     def test_a_tree_that_did_not_change_still_says_so(self):
         self.cli("snap", self.tree, "-q", "--apparent", "--min-size", "1")
