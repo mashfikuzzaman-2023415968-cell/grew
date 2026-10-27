@@ -2,6 +2,8 @@
 
 grew tells you which directories got bigger, and by how much.
 
+[Watch the 23-second video](media/grew-promo.mp4) to see it in action.
+
 Most disk tools show you what is big right now. That helps less than you'd think. When the
 disk is full you usually already know your home directory is big. What you want to know is
 what changed: which folder quietly grew by 30 GB since last week. grew answers that. It
